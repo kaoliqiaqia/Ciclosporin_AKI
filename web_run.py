@@ -7,13 +7,13 @@ st.set_page_config(page_title="AKI风险预测", layout="centered")
 st.title("急性肾损伤（AKI）风险评估工具")
 st.markdown("请选择患者组别并填写以下临床信息")
 
+# 模型文件相对路径（假设这些文件与当前脚本位于同一目录下）
+adult_model_path = "logistic_model_adult.pkl"
+adult_bundle_path = "logistic_preprocess_bundle_adult.pkl"
+child_model_path = "logistic_model_child.pkl"
+child_bundle_path = "logistic_preprocess_bundle_child.pkl"
 
-adult_model_path = "logistic_model_5features.pkl"
-adult_bundle_path = "logistic_preprocess_bundle_5features.pkl"
-child_model_path = "randomforest_model_top10_child.pkl"
-child_bundle_path = "randomforest_preprocess_bundle_top10_child.pkl"
-
-# 加载模型和预处理对象
+# 加载成年组模型和预处理对象
 adult_model = joblib.load(adult_model_path)
 adult_bundle = joblib.load(adult_bundle_path)
 adult_imputer = adult_bundle["imputer"]
@@ -22,6 +22,7 @@ adult_scaler = adult_bundle["scaler"]
 adult_cont_features = adult_bundle["continuous_features"]
 adult_cat_features = adult_bundle["categorical_features"]
 
+# 加载未成年组模型和预处理对象（逻辑回归）
 child_model = joblib.load(child_model_path)
 child_bundle = joblib.load(child_bundle_path)
 child_imputer = child_bundle["imputer"]
@@ -33,30 +34,29 @@ child_cat_features = child_bundle["categorical_features"]
 # 用户选择组别
 group = st.radio("请选择患者组别", ("成年组 (≥18岁)", "未成年组 (<18岁)"))
 
-#dynamic generation of input form
+# 动态生成输入表单
 if group == "成年组 (≥18岁)":
     st.subheader("成年组临床指标")
     input_data = {}
-
     for feat in adult_cont_features:
-        input_data[feat] = st.number_input(f"{feat} (mg)", min_value=0.0, value=50.0, step=5.0)
-
+        input_data[feat] = st.number_input(f"{feat} (单位)", min_value=0.0, value=50.0, step=5.0)
     for feat in adult_cat_features:
-
         display_name = feat
         input_data[feat] = st.selectbox(display_name, [0, 1], format_func=lambda x: "是" if x==1 else "否")
 else:
     st.subheader("未成年组临床指标")
     input_data = {}
-
+    # 连续变量（动态生成）
     for feat in child_cont_features:
+        # 可自定义显示标签（示例：alt 显示为 ALT，报告值 显示为 环孢素报告值）
         if feat == "alt":
-            input_data[feat] = st.number_input("ALT (U/L)", min_value=0.0, value=30.0, step=5.0)
+            label = "ALT (U/L)"
         elif feat == "报告值":
-            input_data[feat] = st.number_input("环孢素报告值 (ng/mL)", min_value=0.0, value=100.0, step=10.0)
+            label = "环孢素报告值 (ng/mL)"
         else:
-            input_data[feat] = st.number_input(feat, min_value=0.0, value=0.0, step=1.0)
-
+            label = f"{feat} (单位)"
+        input_data[feat] = st.number_input(label, min_value=0.0, value=50.0, step=5.0)
+    # 分类变量（动态生成，可添加中文映射）
     cat_name_map = {
         "凝血功能异常": "凝血功能异常",
         "肝损害": "肝损害",
@@ -72,7 +72,6 @@ else:
         input_data[feat] = st.selectbox(display, [0, 1], format_func=lambda x: "是" if x==1 else "否")
 
 if st.button("预测 AKI 风险"):
-
     df_input = pd.DataFrame([input_data])
     
     if group == "成年组 (≥18岁)":
@@ -90,15 +89,14 @@ if st.button("预测 AKI 风险"):
         cat_features = child_cat_features
         model = child_model
     
-  
+    # 缺失值插补
     X_imp = imputer.transform(df_input)
     X_imp = pd.DataFrame(X_imp, columns=df_input.columns)
     
-
+    # 分类变量独热编码
     if cat_features:
         cat_df = X_imp[cat_features].copy()
         cat_encoded = encoder.transform(cat_df)
-
         cat_columns = []
         for i, col in enumerate(cat_features):
             cats = encoder.categories_[i]
@@ -107,14 +105,14 @@ if st.button("预测 AKI 风险"):
         X_imp = X_imp.drop(columns=cat_features)
         X_imp = pd.concat([X_imp, cat_encoded_df], axis=1)
     
-
+    # 连续变量标准化
     if cont_features:
         X_imp[cont_features] = scaler.transform(X_imp[cont_features])
-
+    
+    # 预测概率和类别
     prob = model.predict_proba(X_imp)[0, 1]
     pred = 1 if prob >= 0.5 else 0
     
-
     st.subheader("预测结果")
     if pred == 1:
         st.error(f"⚠️ 高风险：AKI 发生概率为 {prob:.2%}")
@@ -123,10 +121,9 @@ if st.button("预测 AKI 风险"):
         st.success(f"✅ 低风险：AKI 发生概率为 {prob:.2%}")
         st.markdown("继续监测，注意高危因素。")
     
+    # 显示模型性能说明（可根据实际情况修改）
     if group == "成年组 (≥18岁)":
-        st.caption("模型基于成年组数据构建，AUC=0.877 (95% CI 0.764–0.966)，阈值0.5。")
+        st.caption("模型基于成年组逻辑回归构建，AUC=0.877 (95% CI 0.764–0.966)，阈值0.5。")
     else:
-        st.caption("模型基于未成年组数据构建，AUC=0.788 (95% CI 未提供)，阈值0.5。")
+        st.caption("模型基于未成年组逻辑回归构建，阈值0.5。")
     st.caption("预测结果仅供临床参考，不能替代医生诊断。")
-
-
